@@ -9,7 +9,11 @@
 
 		foreach ($article as $k => $v) {
 			if ($k != "feed" && isset($v)) {
-				$tmp .= sha1("$k:" . (is_array($v) ? implode(",", $v) : $v));
+				$x = strip_tags(is_array($v) ? implode(",", $v) : $v);
+
+				//_debug("$k:" . sha1($x) . ":" . htmlspecialchars($x), true);
+
+				$tmp .= sha1("$k:" . sha1($x));
 			}
 		}
 
@@ -130,6 +134,10 @@
 		$query_limit = "";
 		if($limit) $query_limit = sprintf("LIMIT %d", $limit);
 
+		// Update the least recently updated feeds first
+		$query_order = "ORDER BY last_updated";
+		if (DB_TYPE == "pgsql") $query_order .= " NULLS FIRST";
+
 		$query = "SELECT DISTINCT ttrss_feeds.feed_url, ttrss_feeds.last_updated
 			FROM
 				ttrss_feeds, ttrss_users, ttrss_user_prefs
@@ -140,7 +148,7 @@
 				AND ttrss_user_prefs.pref_name = 'DEFAULT_UPDATE_INTERVAL'
 				$login_thresh_qpart $update_limit_qpart
 				$updstart_thresh_qpart
-				ORDER BY last_updated $query_limit";
+				$query_order $query_limit";
 
 		// We search for feed needing update.
 		$result = db_query($query);
@@ -222,6 +230,67 @@
 
 	} // function update_daemon_common
 
+	// this is used when subscribing
+	function set_basic_feed_info($feed) {
+
+		$feed = db_escape_string($feed);
+
+		$result = db_query("SELECT feed_url,auth_pass,auth_login,auth_pass_encrypted
+					FROM ttrss_feeds WHERE id = '$feed'");
+
+		$auth_pass_encrypted = sql_bool_to_bool(db_fetch_result($result,
+			0, "auth_pass_encrypted"));
+
+		$auth_login = db_fetch_result($result, 0, "auth_login");
+		$auth_pass = db_fetch_result($result, 0, "auth_pass");
+
+		if ($auth_pass_encrypted) {
+			require_once "crypt.php";
+			$auth_pass = decrypt_string($auth_pass);
+		}
+
+		$fetch_url = db_fetch_result($result, 0, "feed_url");
+
+		$feed_data = fetch_file_contents($fetch_url, false,
+			$auth_login, $auth_pass, false,
+			FEED_FETCH_TIMEOUT_TIMEOUT,
+			0);
+
+		global $fetch_curl_used;
+
+		if (!$fetch_curl_used) {
+			$tmp = @gzdecode($feed_data);
+
+			if ($tmp) $feed_data = $tmp;
+		}
+
+		$feed_data = trim($feed_data);
+
+		$rss = new FeedParser($feed_data);
+		$rss->init();
+
+		if (!$rss->error()) {
+
+			$result = db_query("SELECT title, site_url FROM ttrss_feeds WHERE id = '$feed'");
+
+			$registered_title = db_fetch_result($result, 0, "title");
+			$orig_site_url = db_fetch_result($result, 0, "site_url");
+
+			$site_url = db_escape_string(mb_substr(rewrite_relative_url($fetch_url, $rss->get_link()), 0, 245));
+			$feed_title = db_escape_string(mb_substr($rss->get_title(), 0, 199));
+
+			if ($feed_title && (!$registered_title || $registered_title == "[Unknown]")) {
+				db_query("UPDATE ttrss_feeds SET
+					title = '$feed_title' WHERE id = '$feed'");
+			}
+
+			if ($site_url && $orig_site_url != $site_url) {
+				db_query("UPDATE ttrss_feeds SET
+							site_url = '$site_url' WHERE id = '$feed'");
+			}
+		}
+	}
+
 	// ignore_daemon is not used
 	function update_rss_feed($feed, $ignore_daemon = false, $no_cache = false, $rss = false) {
 
@@ -230,10 +299,22 @@
 		_debug_suppress(!$debug_enabled);
 		_debug("start", $debug_enabled);
 
+		$result = db_query("SELECT title FROM ttrss_feeds
+			WHERE id = '$feed'");
+		$title = db_fetch_result($result, 0, "title");
+
+		// feed was batch-subscribed or something, we need to get basic info
+		// this is not optimal currently as it fetches stuff separately TODO: optimize
+		if ($title == "[Unknown]") {
+			_debug("setting basic feed info for $feed...");
+			set_basic_feed_info($feed);
+		}
+
 		$result = db_query("SELECT id,update_interval,auth_login,
 			feed_url,auth_pass,cache_images,
 			mark_unread_on_update, owner_uid,
 			pubsub_state, auth_pass_encrypted,
+			feed_language,
 			(SELECT max(date_entered) FROM
 				ttrss_entries, ttrss_user_entries where ref_id = id AND feed_id = '$feed') AS last_article_timestamp
 			FROM ttrss_feeds WHERE id = '$feed'");
@@ -268,6 +349,8 @@
 
 		$cache_images = sql_bool_to_bool(db_fetch_result($result, 0, "cache_images"));
 		$fetch_url = db_fetch_result($result, 0, "feed_url");
+		$feed_language = db_escape_string(mb_strtolower(db_fetch_result($result, 0, "feed_language")));
+		if (!$feed_language) $feed_language = 'english';
 
 		$feed = db_escape_string($feed);
 
@@ -335,24 +418,6 @@
 
 				_debug("fetch done.", $debug_enabled);
 
-				/* if ($feed_data) {
-					$error = verify_feed_xml($feed_data);
-
-					if ($error) {
-						_debug("error verifying XML, code: " . $error->code, $debug_enabled);
-
-						if ($error->code == 26) {
-							_debug("got error 26, trying to decode entities...", $debug_enabled);
-
-							$feed_data = html_entity_decode($feed_data, ENT_COMPAT, 'UTF-8');
-
-							$error = verify_feed_xml($feed_data);
-
-							if ($error) $feed_data = '';
-						}
-					}
-				} */
-
 				// cache vanilla feed data for re-use
 				if ($feed_data && !$auth_pass && !$auth_login && is_writable(CACHE_DIR . "/simplepie")) {
 					$new_rss_hash = sha1($feed_data);
@@ -400,13 +465,6 @@
 			$rss->init();
 		}
 
-		if (DETECT_ARTICLE_LANGUAGE) {
-			require_once "lib/languagedetect/LanguageDetect.php";
-
-			$lang = new Text_LanguageDetect();
-			$lang->setNameMode(2);
-		}
-
 //		print_r($rss);
 
 		$feed = db_escape_string($feed);
@@ -416,6 +474,7 @@
 			// We use local pluginhost here because we need to load different per-user feed plugins
 			$pluginhost->run_hooks(PluginHost::HOOK_FEED_PARSED, "hook_feed_parsed", $rss);
 
+			_debug("language: $feed_language", $debug_enabled);
 			_debug("processing feed data...", $debug_enabled);
 
 //			db_query("BEGIN");
@@ -426,13 +485,11 @@
 				$favicon_interval_qpart = "favicon_last_checked < DATE_SUB(NOW(), INTERVAL 12 HOUR)";
 			}
 
-			$result = db_query("SELECT title,site_url,owner_uid,favicon_avg_color,
+			$result = db_query("SELECT owner_uid,favicon_avg_color,
 				(favicon_last_checked IS NULL OR $favicon_interval_qpart) AS
 						favicon_needs_check
 				FROM ttrss_feeds WHERE id = '$feed'");
 
-			$registered_title = db_fetch_result($result, 0, "title");
-			$orig_site_url = db_fetch_result($result, 0, "site_url");
 			$favicon_needs_check = sql_bool_to_bool(db_fetch_result($result, 0,
 				"favicon_needs_check"));
 			$favicon_avg_color = db_fetch_result($result, 0, "favicon_avg_color");
@@ -479,27 +536,9 @@
 					WHERE id = '$feed'");
 			}
 
-			if (!$registered_title || $registered_title == "[Unknown]") {
-
-				$feed_title = db_escape_string(mb_substr($rss->get_title(), 0, 199));
-
-				if ($feed_title) {
-					_debug("registering title: $feed_title", $debug_enabled);
-
-					db_query("UPDATE ttrss_feeds SET
-						title = '$feed_title' WHERE id = '$feed'");
-				}
-			}
-
-			if ($site_url && $orig_site_url != $site_url) {
-				db_query("UPDATE ttrss_feeds SET
-					site_url = '$site_url' WHERE id = '$feed'");
-			}
-
 			_debug("loading filters & labels...", $debug_enabled);
 
 			$filters = load_filters($feed, $owner_uid);
-			$labels = get_all_labels($owner_uid);
 
 			_debug("" . count($filters) . " filters loaded.", $debug_enabled);
 
@@ -565,9 +604,16 @@
 
 			_debug("processing articles...", $debug_enabled);
 
+			$tstart = time();
+
 			foreach ($items as $item) {
 				if ($_REQUEST['xdebug'] == 3) {
 					print_r($item);
+				}
+
+				if (ini_get("max_execution_time") > 0 && time() - $tstart >= ini_get("max_execution_time") * 0.7) {
+					_debug("looks like there's too many articles to process at once, breaking out", $debug_enabled);
+					break;
 				}
 
 				$entry_guid = $item->get_id();
@@ -615,21 +661,6 @@
 					print "\n";
 				}
 
-				$entry_language = "";
-
-				if (DETECT_ARTICLE_LANGUAGE) {
-					$entry_language = $lang->detect($entry_title . " " . $entry_content, 1);
-
-					if (count($entry_language) > 0) {
-						$possible = array_keys($entry_language);
-						$entry_language = $possible[0];
-
-						_debug("detected language: $entry_language", $debug_enabled);
-					} else {
-						$entry_language = "";
-					}
-				}
-
 				$entry_comments = $item->get_comments_url();
 				$entry_author = $item->get_author();
 
@@ -665,21 +696,28 @@
 
 				_debug("done collecting data.", $debug_enabled);
 
-				$result = db_query("SELECT id, content_hash FROM ttrss_entries
+				$result = db_query("SELECT id, content_hash, lang FROM ttrss_entries
 					WHERE guid = '".db_escape_string($entry_guid)."' OR guid = '$entry_guid_hashed'");
 
 				if (db_num_rows($result) != 0) {
 					$base_entry_id = db_fetch_result($result, 0, "id");
 					$entry_stored_hash = db_fetch_result($result, 0, "content_hash");
 					$article_labels = get_article_labels($base_entry_id, $owner_uid);
+					$entry_language = db_fetch_result($result, 0, "lang");
+
+					$existing_tags = get_article_tags($base_entry_id, $owner_uid);
+					$entry_tags = array_unique(array_merge($entry_tags, $existing_tags));
+
 				} else {
 					$base_entry_id = false;
 					$entry_stored_hash = "";
 					$article_labels = array();
+					$entry_language = "";
 				}
 
 				$article = array("owner_uid" => $owner_uid, // read only
 					"guid" => $entry_guid, // read only
+					"guid_hashed" => $entry_guid_hashed, // read only
 					"title" => $entry_title,
 					"content" => $entry_content,
 					"link" => $entry_link,
@@ -687,7 +725,8 @@
 					"tags" => $entry_tags,
 					"author" => $entry_author,
 					"force_catchup" => false, // ugly hack for the time being
-					"language" => $entry_language, // read only
+					"score_modifier" => 0, // no previous value, plugin should recalculate score modifier based on content if needed
+					"language" => $entry_language,
 					"feed" => array("id" => $feed,
 						"fetch_url" => $fetch_url,
 						"site_url" => $site_url)
@@ -711,11 +750,7 @@
 					db_query("UPDATE ttrss_entries SET date_updated = NOW()
 						WHERE id = '$base_entry_id'");
 
-                    // if we allow duplicate posts, we have to continue to
-                    // create the user entries for this feed
-                    if (!get_pref("ALLOW_DUPLICATE_POSTS", $owner_uid, false)) {
-                        continue;
-                    }
+					continue;
 				}
 
 				_debug("hash differs, applying plugin filters:", $debug_enabled);
@@ -735,6 +770,58 @@
 
 				_debug("plugin data: $entry_plugin_data", $debug_enabled);
 
+				// Workaround: 4-byte unicode requires utf8mb4 in MySQL. See https://tt-rss.org/forum/viewtopic.php?f=1&t=3377&p=20077#p20077
+				if (DB_TYPE == "mysql") {
+					foreach ($article as $k => $v) {
+
+						// i guess we'll have to take the risk of 4byte unicode labels & tags here
+						if (!is_array($article[$k])) {
+							$article[$k] = preg_replace('/[\x{10000}-\x{10FFFF}]/u', "\xEF\xBF\xBD", $v);
+						}
+					}
+				}
+
+				/* Collect article tags here so we could filter by them: */
+
+				$article_filters = get_article_filters($filters, $article["title"],
+					$article["content"], $article["link"], 0, $article["author"],
+					$article["tags"]);
+
+				if ($debug_enabled) {
+					_debug("article filters: ", $debug_enabled);
+					if (count($article_filters) != 0) {
+						print_r($article_filters);
+					}
+				}
+
+				$plugin_filter_names = find_article_filters($article_filters, "plugin");
+				$plugin_filter_actions = $pluginhost->get_filter_actions();
+
+				if (count($plugin_filter_names) > 0) {
+					_debug("applying plugin filter actions...", $debug_enabled);
+
+					foreach ($plugin_filter_names as $pfn) {
+						list($pfclass,$pfaction) = explode(":", $pfn["param"]);
+
+						if (isset($plugin_filter_actions[$pfclass])) {
+							$plugin = $pluginhost->get_plugin($pfclass);
+
+							_debug("... $pfclass: $pfaction", $debug_enabled);
+
+							if ($plugin) {
+								$start = microtime(true);
+								$article = $plugin->hook_article_filter_action($article, $pfaction);
+
+								_debug("=== " . sprintf("%.4f (sec)", microtime(true) - $start), $debug_enabled);
+							} else {
+								_debug("??? $pfclass: plugin object not found.");
+							}
+						} else {
+							_debug("??? $pfclass: filter plugin not registered.");
+						}
+					}
+				}
+
 				$entry_tags = $article["tags"];
 				$entry_guid = db_escape_string($entry_guid);
 				$entry_title = db_escape_string($article["title"]);
@@ -743,6 +830,8 @@
 				$entry_content = $article["content"]; // escaped below
 				$entry_force_catchup = $article["force_catchup"];
 				$article_labels = $article["labels"];
+				$entry_score_modifier = (int) $article["score_modifier"];
+				$entry_language = db_escape_string($article["language"]);
 
 				if ($debug_enabled) {
 					_debug("article labels:", $debug_enabled);
@@ -756,7 +845,7 @@
 
 				$entry_content = db_escape_string($entry_content, false);
 
-				db_query("BEGIN");
+				//db_query("BEGIN");
 
 				$result = db_query("SELECT id FROM	ttrss_entries
 					WHERE (guid = '$entry_guid' OR guid = '$entry_guid_hashed')");
@@ -826,40 +915,19 @@
 							id = '$ref_id'");
 					} */
 
-					// check for user post link to main table
-
-					// do we allow duplicate posts with same GUID in different feeds?
-					if (get_pref("ALLOW_DUPLICATE_POSTS", $owner_uid, false)) {
-						$dupcheck_qpart = "AND (feed_id = '$feed' OR feed_id IS NULL)";
-					} else {
-						$dupcheck_qpart = "";
-					}
-
-					/* Collect article tags here so we could filter by them: */
-
-					$article_filters = get_article_filters($filters, $entry_title,
-						$entry_content, $entry_link, $entry_timestamp, $entry_author,
-						$entry_tags);
-
-					if ($debug_enabled) {
-						_debug("article filters: ", $debug_enabled);
-						if (count($article_filters) != 0) {
-							print_r($article_filters);
-						}
-					}
-
 					if (find_article_filter($article_filters, "filter")) {
-						db_query("COMMIT"); // close transaction in progress
+						//db_query("COMMIT"); // close transaction in progress
 						continue;
 					}
 
-					$score = calculate_article_score($article_filters);
+					$score = calculate_article_score($article_filters) + $entry_score_modifier;
 
-					_debug("initial score: $score", $debug_enabled);
+					_debug("initial score: $score [including plugin modifier: $entry_score_modifier]", $debug_enabled);
+
+					// check for user post link to main table
 
 					$query = "SELECT ref_id, int_id FROM ttrss_user_entries WHERE
-							ref_id = '$ref_id' AND owner_uid = '$owner_uid'
-							$dupcheck_qpart";
+							ref_id = '$ref_id' AND owner_uid = '$owner_uid'";
 
 //					if ($_REQUEST["xdebug"]) print "$query\n";
 
@@ -948,24 +1016,41 @@
 
 					_debug("RID: $entry_ref_id, IID: $entry_int_id", $debug_enabled);
 
+					if (DB_TYPE == "pgsql") {
+					   $tsvector_combined = db_escape_string(mb_substr($entry_title . ' ' . strip_tags(str_replace('<', ' <', $entry_content)),
+							0, 1000000));
+
+						$tsvector_qpart = "tsvector_combined = to_tsvector('$feed_language', '$tsvector_combined'),";
+
+					} else {
+						$tsvector_qpart = "";
+					}
+
 					db_query("UPDATE ttrss_entries
 						SET title = '$entry_title',
 							content = '$entry_content',
 							content_hash = '$entry_current_hash',
 							updated = '$entry_timestamp_fmt',
+							$tsvector_qpart
 							num_comments = '$num_comments',
 							plugin_data = '$entry_plugin_data',
 							author = '$entry_author',
 							lang = '$entry_language'
 						WHERE id = '$ref_id'");
 
+					// update aux data
+					db_query("UPDATE ttrss_user_entries
+							SET score = '$score' WHERE ref_id = '$ref_id'");
+
 					if ($mark_unread_on_update) {
+						_debug("article updated, marking unread as requested.", $debug_enabled);
+
 						db_query("UPDATE ttrss_user_entries
 							SET last_read = null, unread = true WHERE ref_id = '$ref_id'");
 					}
 				}
 
-				db_query("COMMIT");
+				//db_query("COMMIT");
 
 				_debug("assigning labels [other]...", $debug_enabled);
 
@@ -999,7 +1084,7 @@
 					print_r($enclosures);
 				}
 
-				db_query("BEGIN");
+				//db_query("BEGIN");
 
 //				debugging
 //				db_query("DELETE FROM ttrss_enclosures WHERE post_id = '$entry_ref_id'");
@@ -1022,7 +1107,7 @@
 					}
 				}
 
-				db_query("COMMIT");
+				//db_query("COMMIT");
 
 				// check for manual tags (we have to do it here since they're loaded from filters)
 
@@ -1066,7 +1151,7 @@
 
 				if (count($filtered_tags) > 0) {
 
-					db_query("BEGIN");
+					//db_query("BEGIN");
 
 					foreach ($filtered_tags as $tag) {
 
@@ -1099,7 +1184,7 @@
 						SET tag_cache = '$tags_str' WHERE ref_id = '$entry_ref_id'
 						AND owner_uid = $owner_uid");
 
-					db_query("COMMIT");
+					//db_query("COMMIT");
 				}
 
 				_debug("article processed", $debug_enabled);
@@ -1165,6 +1250,8 @@
 					if ($file_content && strlen($file_content) > _MIN_CACHE_IMAGE_SIZE) {
 						file_put_contents($local_filename, $file_content);
 					}
+				} else {
+					touch($local_filename);
 				}
 			}
 		}
@@ -1320,7 +1407,7 @@
 					array_push($matches, $action);
 
 					// if Stop action encountered, perform no further processing
-					if ($action["type"] == "stop") return $matches;
+					if (isset($action["type"]) && $action["type"] == "stop") return $matches;
 				}
 			}
 		}
@@ -1421,9 +1508,9 @@
 
 		purge_orphans( true);
 		cleanup_counters_cache($debug);
-		$rc = cleanup_tags( 14, 50000);
 
-		_debug("Cleaned $rc cached tags.");
+		//$rc = cleanup_tags( 14, 50000);
+		//_debug("Cleaned $rc cached tags.");
 
 		PluginHost::getInstance()->run_hooks(PluginHost::HOOK_HOUSE_KEEPING, "hook_house_keeping", "");
 

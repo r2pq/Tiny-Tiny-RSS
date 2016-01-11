@@ -79,7 +79,7 @@ function updateFeedList() {
 			var id = String(item.id);
 			var is_cat = id.match("^CAT:");
 			var feed = id.substr(id.indexOf(":")+1);
-			viewfeed(feed, '', is_cat);
+			viewfeed({feed: feed, is_cat: is_cat});
 			return false;
 		},
 		openOnClick: false,
@@ -147,10 +147,10 @@ function catchupAllFeeds() {
 }
 
 function viewCurrentFeed(method) {
-	console.log("viewCurrentFeed");
+	console.log("viewCurrentFeed: " + method);
 
 	if (getActiveFeedId() != undefined) {
-		viewfeed(getActiveFeedId(), method, activeFeedIsCat());
+		viewfeed({feed: getActiveFeedId(), is_cat: activeFeedIsCat(), method: method});
 	}
 	return false; // block unneeded form submits
 }
@@ -273,13 +273,13 @@ function init() {
 				var rv = dijit.byId("feedTree").getNextFeed(
 						getActiveFeedId(), activeFeedIsCat());
 
-				if (rv) viewfeed(rv[0], '', rv[1], null, null, null, true);
+				if (rv) viewfeed({feed: rv[0], is_cat: rv[1], can_wait: true})
 		};
 		hotkey_actions["prev_feed"] = function() {
 				var rv = dijit.byId("feedTree").getPreviousFeed(
 						getActiveFeedId(), activeFeedIsCat());
 
-				if (rv) viewfeed(rv[0], '', rv[1], null, null, null, true);
+				if (rv) viewfeed({feed: rv[0], is_cat: rv[1], can_wait: true})
 		};
 		hotkey_actions["next_article"] = function() {
 				moveToPost('next');
@@ -411,7 +411,7 @@ function init() {
 		};
 		hotkey_actions["feed_refresh"] = function() {
 				if (getActiveFeedId() != undefined) {
-					viewfeed(getActiveFeedId(), '', activeFeedIsCat());
+					viewfeed({feed: getActiveFeedId(), is_cat: activeFeedIsCat()});
 					return;
 				}
 		};
@@ -422,11 +422,18 @@ function init() {
 				quickAddFeed();
 		};
 		hotkey_actions["feed_debug_update"] = function() {
-				window.open("backend.php?op=feeds&method=view&feed=" + getActiveFeedId() +
-					"&view_mode=adaptive&order_by=default&update=&m=ForceUpdate&cat=" +
-					activeFeedIsCat() + "&DevForceUpdate=1&debug=1&xdebug=1&csrf_token=" +
-					getInitParam("csrf_token"));
+			if (!activeFeedIsCat() && parseInt(getActiveFeedId()) > 0) {
+				window.open("backend.php?op=feeds&method=update_debugger&feed_id=" + getActiveFeedId() +
+				"&csrf_token=" + getInitParam("csrf_token"));
+			} else {
+				alert("You can't debug this kind of feed.");
+			}
 		};
+
+		hotkey_actions["feed_debug_viewfeed"] = function() {
+			viewfeed({feed: getActiveFeedId(), is_cat: activeFeedIsCat(), viewfeed_debug: true});
+		};
+
 		hotkey_actions["feed_edit"] = function() {
 				if (activeFeedIsCat())
 					alert(__("You can't edit this kind of feed."));
@@ -452,16 +459,16 @@ function init() {
 				}
 		};
 		hotkey_actions["goto_all"] = function() {
-				viewfeed(-4);
+				viewfeed({feed: -4});
 		};
 		hotkey_actions["goto_fresh"] = function() {
-				viewfeed(-3);
+				viewfeed({feed: -3});
 		};
 		hotkey_actions["goto_marked"] = function() {
-				viewfeed(-1);
+				viewfeed({feed: -1});
 		};
 		hotkey_actions["goto_published"] = function() {
-				viewfeed(-2);
+				viewfeed({feed: -2});
 		};
 		hotkey_actions["goto_tagcloud"] = function() {
 				displayDlg(__("Tag cloud"), "printTagCloud");
@@ -650,9 +657,6 @@ function quickMenuGo(opid) {
 		case "qmcTagCloud":
 			displayDlg(__("Tag cloud"), "printTagCloud");
 			break;
-		case "qmcTagSelect":
-			displayDlg(__("Select item(s) by tags"), "printTagSelect");
-			break;
 		case "qmcSearch":
 			search();
 			break;
@@ -767,7 +771,7 @@ function parse_runtime_info(data) {
 		}
 
 		if (k == "daemon_is_running" && v != 1) {
-			notify_error("<span onclick=\"javascript:explainError(1)\">Update daemon is not running.</span>", true);
+			notify_error("<span onclick=\"explainError(1)\">Update daemon is not running.</span>", true);
 			return;
 		}
 
@@ -782,7 +786,7 @@ function parse_runtime_info(data) {
 		}
 
 		if (k == "daemon_stamp_ok" && v != 1) {
-			notify_error("<span onclick=\"javascript:explainError(3)\">Update daemon is not updating feeds.</span>", true);
+			notify_error("<span onclick=\"explainError(3)\">Update daemon is not updating feeds.</span>", true);
 			return;
 		}
 

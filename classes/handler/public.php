@@ -2,7 +2,7 @@
 class Handler_Public extends Handler {
 
 	private function generate_syndicated_feed($owner_uid, $feed, $is_cat,
-		$limit, $offset, $search, $search_mode,
+		$limit, $offset, $search,
 		$view_mode = false, $format = 'atom', $order = false, $orig_guid = false, $start_ts = false) {
 
 		require_once "lib/MiniTemplator.class.php";
@@ -37,12 +37,31 @@ class Handler_Public extends Handler {
 			break;
 		}
 
-		//function queryFeedHeadlines($feed, $limit, $view_mode, $cat_view, $search, $search_mode, $override_order = false, $offset = 0, $owner_uid = 0, $filter = false, $since_id = 0, $include_children = false, $ignore_vfeed_group = false, $override_strategy = false, $override_vfeed = false, $start_ts = false) {
-
-		$qfh_ret = queryFeedHeadlines($feed,
-			1, $view_mode, $is_cat, $search, $search_mode,
+		/*$qfh_ret = queryFeedHeadlines($feed,
+			1, $view_mode, $is_cat, $search, false,
 			$date_sort_field, $offset, $owner_uid,
-			false, 0, true, true, false, false, $start_ts);
+			false, 0, true, true, false, false, $start_ts);*/
+
+		//function queryFeedHeadlines($feed,
+		// $limit, $view_mode, $cat_view, $search, $search_mode,
+		// $override_order = false, $offset = 0, $owner_uid = 0,
+		// $filter = false, $since_id = 0, $include_children = false, $ignore_vfeed_group = false, $override_strategy = false, $override_vfeed = false, $start_ts = false, $check_top_id = false) {
+
+		$params = array(
+			"owner_uid" => $owner_uid,
+			"feed" => $feed,
+			"limit" => 1,
+			"view_mode" => $view_mode,
+			"cat_view" => $is_cat,
+			"search" => $search,
+			"override_order" => $date_sort_field,
+			"include_children" => true,
+			"ignore_vfeed_group" => true,
+			"offset" => $offset,
+			"start_ts" => $start_ts
+		);
+
+		$qfh_ret = queryFeedHeadlines($params);
 
 		$result = $qfh_ret[0];
 
@@ -60,11 +79,26 @@ class Handler_Public extends Handler {
 			header("Last-Modified: $last_modified", true);
 		}
 
-		$qfh_ret = queryFeedHeadlines($feed,
-			$limit, $view_mode, $is_cat, $search, $search_mode,
+		/*$qfh_ret = queryFeedHeadlines($feed,
+			$limit, $view_mode, $is_cat, $search, false,
 			$date_sort_field, $offset, $owner_uid,
-			false, 0, true, true, false, false, $start_ts);
+			false, 0, true, true, false, false, $start_ts);*/
 
+		$params = array(
+			"owner_uid" => $owner_uid,
+			"feed" => $feed,
+			"limit" => $limit,
+			"view_mode" => $view_mode,
+			"cat_view" => $is_cat,
+			"search" => $search,
+			"override_order" => $date_sort_field,
+			"include_children" => true,
+			"ignore_vfeed_group" => true,
+			"offset" => $offset,
+			"start_ts" => $start_ts
+		);
+
+		$qfh_ret = queryFeedHeadlines($params);
 
 		$result = $qfh_ret[0];
 		$feed_title = htmlspecialchars($qfh_ret[1]);
@@ -374,7 +408,6 @@ class Handler_Public extends Handler {
 		$offset = (int)$this->dbh->escape_string($_REQUEST["offset"]);
 
 		$search = $this->dbh->escape_string($_REQUEST["q"]);
-		$search_mode = $this->dbh->escape_string($_REQUEST["smode"]);
 		$view_mode = $this->dbh->escape_string($_REQUEST["view-mode"]);
 		$order = $this->dbh->escape_string($_REQUEST["order"]);
 		$start_ts = $this->dbh->escape_string($_REQUEST["ts"]);
@@ -400,7 +433,7 @@ class Handler_Public extends Handler {
 
 		if ($owner_id) {
 			$this->generate_syndicated_feed($owner_id, $feed, $is_cat, $limit,
-				$offset, $search, $search_mode, $view_mode, $format, $order, $orig_guid, $start_ts);
+				$offset, $search, $view_mode, $format, $order, $orig_guid, $start_ts);
 		} else {
 			header('HTTP/1.1 403 Forbidden');
 		}
@@ -499,7 +532,7 @@ class Handler_Public extends Handler {
 					</div>
 					<button type="submit"><?php echo __('Share') ?></button>
 					<button onclick="return window.close()"><?php echo __('Cancel') ?></button>
-					</div>
+					</td>
 
 				</form>
 				</td></tr></table>
@@ -971,10 +1004,10 @@ class Handler_Public extends Handler {
 
 						print "<h2>Database update required</h2>";
 
-						print "<h3>";
-						printf("Your Tiny Tiny RSS database needs update to the latest version: %d to %d.",
-							$updater->getSchemaVersion(), SCHEMA_VERSION);
-						print "</h3>";
+						print_notice("<h4>".
+						sprintf("Your Tiny Tiny RSS database needs update to the latest version: %d to %d.",
+							$updater->getSchemaVersion(), SCHEMA_VERSION).
+						"</h4>");
 
 						print_warning("Please backup your database before proceeding.");
 

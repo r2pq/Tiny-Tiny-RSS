@@ -123,7 +123,7 @@ class RPC extends Handler_Protected {
 		$key = $_REQUEST['key'];
 		$value = str_replace("\n", "<br/>", $_REQUEST['value']);
 
-		set_pref($key, $value, $_SESSION['uid'], $key != 'USER_STYLESHEET');
+		set_pref($key, $value, false, $key != 'USER_STYLESHEET');
 
 		print json_encode(array("param" =>$key, "value" => $value));
 	}
@@ -379,6 +379,8 @@ class RPC extends Handler_Protected {
 	}
 
 	function updateFeedBrowser() {
+		if (defined('_DISABLE_FEED_BROWSER') && _DISABLE_FEED_BROWSER) return;
+
 		$search = $this->dbh->escape_string($_REQUEST["search"]);
 		$limit = $this->dbh->escape_string($_REQUEST["limit"]);
 		$mode = (int) $this->dbh->escape_string($_REQUEST["mode"]);
@@ -548,7 +550,7 @@ class RPC extends Handler_Protected {
 
 		// Purge orphans and cleanup tags
 		purge_orphans();
-		cleanup_tags(14, 50000);
+		//cleanup_tags(14, 50000);
 
 		if ($num_updated > 0) {
 			print json_encode(array("message" => "UPDATE_COUNTERS",
