@@ -2392,6 +2392,7 @@ INSERT INTO ttrss_filter_actions VALUES (5, 'publish', 'Publish article');
 INSERT INTO ttrss_filter_actions VALUES (6, 'score', 'Modify score');
 INSERT INTO ttrss_filter_actions VALUES (7, 'label', 'Assign label');
 INSERT INTO ttrss_filter_actions VALUES (8, 'stop', 'Stop / Do nothing');
+INSERT INTO ttrss_filter_actions VALUES (9, 'plugin', 'Invoke plugin');
 
 
 --
@@ -2667,7 +2668,7 @@ SELECT pg_catalog.setval('ttrss_users_id_seq', 1, true);
 -- Data for Name: ttrss_version; Type: TABLE DATA; Schema: public; Owner: postgres
 --
 
-INSERT INTO ttrss_version VALUES (127);
+INSERT INTO ttrss_version VALUES (130);
 
 
 --
@@ -2967,6 +2968,12 @@ CREATE INDEX ttrss_enclosures_post_id_idx ON ttrss_enclosures USING btree (post_
 
 CREATE INDEX ttrss_entries_date_entered_index ON ttrss_entries USING btree (date_entered);
 
+
+--
+-- Name: ttrss_entries_tsvector_combined_idx; Type: INDEX; Schema: public; Owner: postgres; Tablespace: 
+--
+
+CREATE INDEX ttrss_entries_tsvector_combined_idx ON ttrss_entries USING gin (tsvector_combined);
 
 --
 -- Name: ttrss_entries_updated_idx; Type: INDEX; Schema: public; Owner: postgres; Tablespace: 
