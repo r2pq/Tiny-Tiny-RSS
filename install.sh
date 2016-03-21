@@ -4,7 +4,7 @@ echo "\n\nListen 8010 \n\n<VirtualHost *:8010>\n\n\tServerName dev.thelatest.com
 #update permision to different folders, according to tiny-tiny instrucctions
 sudo chmod -R 777 /var/www/tt-rss/cache/images /var/www/tt-rss/cache/upload /var/www/tt-rss/cache/export /var/www/tt-rss/cache/js /var/www/tt-rss/feed-icons /var/www/tt-rss/lock && \
 #create database
-sudo -u postgres psql -U postgres -d postgres -c "CREATE DATABASE tt_rss;" && \
+sudo -u postgres psql -U postgres -d postgres -c "CREATE DATABASE tt_rss ENCODING 'UTF8' LC_COLLATE 'en_US.UTF-8';" && \
 sudo -u postgres psql -U postgres -d tt_rss -a -f tt_rss_initial_config.sql && \
 #create configuration file for Tiny-Tiny and set configurations
 sudo touch /var/www/tt-rss/config.php && \
